@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>15-Minute Bot</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Setup wizard (first run) and reconnect screen -->
+<div id="onboard-view" class="hidden">
+  <div class="onboard">
+    <div class="onboard-brand">15-Minute Bot</div>
+    <ol class="stepper" id="stepper" aria-label="Setup progress"></ol>
+    <div class="card onboard-card" id="onboard-body"></div>
+  </div>
+</div>
+
+<!-- Dashboard -->
+<div id="dash-view" class="hidden">
+  <header class="topbar">
+    <div class="brand">15-Minute Bot</div>
+    <div id="window-clock" class="window-clock" aria-live="off"></div>
+    <div class="top-controls">
+      <button id="engine-btn" class="btn" type="button"></button>
+      <span id="account-label" class="muted small"></span>
+      <button id="disconnect-btn" class="btn ghost" type="button">Disconnect</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="summary" id="summary"></section>
+
+    <section>
+      <div class="section-head">
+        <h2>My markets</h2>
+        <div class="actions">
+          <button id="edit-all-btn" class="btn" type="button">Edit all strategies</button>
+          <button id="add-btn" class="btn primary" type="button">Add markets</button>
+        </div>
+      </div>
+      <div id="markets" class="market-grid"></div>
+    </section>
+
+    <section>
+      <div class="section-head"><h2>Performance</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Market</th><th class="num">Trades</th><th class="num">Won</th><th class="num">Lost</th><th class="num">Win rate</th><th class="num">Pending</th><th class="num">Staked</th><th class="num">P&amp;L</th></tr></thead>
+          <tbody id="perf-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="two-col">
+      <div>
+        <div class="section-head">
+          <h2>Trades</h2>
+          <select id="trade-filter" aria-label="Filter trades by market"></select>
+        </div>
+        <div class="table-wrap tall">
+          <table>
+            <thead><tr><th>Time</th><th>Market</th><th>Side</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Left</th><th>Result</th><th class="num">P&amp;L</th></tr></thead>
+            <tbody id="trades-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="section-head"><h2>Activity</h2></div>
+        <ul id="log" class="log"></ul>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Strategy editor -->
+<dialog id="strategy-dialog">
+  <form id="strategy-form" method="dialog">
+    <h2 id="strategy-title">Edit strategy</h2>
+    <p class="muted small" id="strategy-subtitle"></p>
+    <div class="strategy-fields"></div>
+    <div class="preview" id="strategy-preview"></div>
+    <p class="error" id="strategy-error"></p>
+    <div class="dialog-actions">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Market browser -->
+<dialog id="add-dialog" class="wide">
+  <div class="dialog-head">
+    <h2>15-minute markets</h2>
+    <button type="button" class="btn ghost" data-close>Done</button>
+  </div>
+  <input type="search" id="market-search" placeholder="Search BTC, gold, EUR/USD…" autocomplete="off">
+  <div id="available-list" class="available-list"><p class="muted">Loading…</p></div>
+</dialog>
+
+<!-- Confirmation -->
+<dialog id="confirm-dialog">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <div class="dialog-actions">
+      <button value="cancel" class="btn ghost">Cancel</button>
+      <button value="ok" class="btn danger" id="confirm-ok"></button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
