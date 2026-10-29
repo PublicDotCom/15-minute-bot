@@ -841,23 +841,6 @@ def _trade_summary(trade: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _connection_problem(exc: BaseException) -> Optional[str]:
-    """What went wrong, in plain words, if `exc` is Public being slow or unreachable; else None.
-
-    The SDK wraps these as an APIError with no message, so the cause is what tells them apart.
-    """
-    cause = exc if isinstance(exc, httpx.TransportError) else exc.__cause__
-    if isinstance(cause, httpx.TimeoutException):
-        return "Public took too long to answer"
-    if isinstance(cause, httpx.TransportError):
-        return "Couldn't reach Public"
-    return None
-
-
-def _describe(exc: BaseException) -> str:
-    return _connection_problem(exc) or str(exc)
-
-
 async def _nothing() -> None:
     pass
 
@@ -892,3 +875,20 @@ def _rate_limited_http_client(transport: RateLimitedTransport) -> httpx.AsyncCli
 
 def _cents(price: Decimal) -> str:
     return f"{(price / CENT):.0f}¢"
+
+
+def _connection_problem(exc: BaseException) -> Optional[str]:
+    """What went wrong, in plain words, if `exc` is Public being slow or unreachable; else None.
+
+    The SDK wraps these as an APIError with no message, so the cause is what tells them apart.
+    """
+    cause = exc if isinstance(exc, httpx.TransportError) else exc.__cause__
+    if isinstance(cause, httpx.TimeoutException):
+        return "Public took too long to answer"
+    if isinstance(cause, httpx.TransportError):
+        return "Couldn't reach Public"
+    return None
+
+
+def _describe(exc: BaseException) -> str:
+    return _connection_problem(exc) or str(exc)
