@@ -915,7 +915,7 @@ async function refreshTrades() {
         <td>${esc(names[t.series] ?? t.series)}</td>
         <td>${esc(t.side)}</td>
         <td class="num">${qty}</td>
-        <td class="num">${cents(t.avg_price ?? t.limit_price)}</td>
+        <td class="num">${cents(num(t.avg_price) > 0 ? t.avg_price : t.limit_price)}</td>
         <td class="num">${t.seconds_left ?? "—"}s</td>
         <td><span class="pill ${esc(t.result)}">${esc(t.result.toLowerCase())}</span>${num(t.sold_quantity) > 0 && t.result !== "SOLD"
           ? ` <span class="muted small">${num(t.sold_quantity)} sold early</span>` : ""}${t.exit_reason && num(t.sold_quantity) > 0
