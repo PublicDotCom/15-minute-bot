@@ -62,6 +62,11 @@ TICK_SECONDS = 2.0
 EVENT_REFRESH_SECONDS = 10.0  # how often to look for a market's next window
 AVAILABLE_REFRESH_SECONDS = 30.0
 DETAILS_REFRESH_SECONDS = 30.0  # contract symbols, close time and trading state of each window
+# Public lists a new window a little before it can return its details (usually seconds, sometimes
+# minutes). Until then, ask again every few seconds, and only mention it if it drags on.
+UNOPENED_RETRY_SECONDS = 5.0
+UNOPENED_WARN_SECONDS = 60.0
+UNOPENED_NOTE = "Waiting for Public to open this window"
 QUOTE_HOT_SECONDS = 2.0  # price refresh while any market is in (or near) its entry window
 QUOTE_COLD_SECONDS = 10.0
 MAX_QUOTE_AGE_SECONDS = 5.0  # never trade on prices older than this
@@ -116,6 +121,8 @@ class Window:
     tradable: bool = False
     multi_outcome: bool = False
     details_at: float = float("-inf")
+    unopened_since: Optional[float] = None  # when Public first said it has no details for this window yet
+    unopened_warned: bool = False
     priced_at: float = float("-inf")
     note: Optional[str] = None
 
@@ -355,10 +362,22 @@ class Engine:
     async def _refresh_details(self, window: Window) -> None:
         """Contract symbols, close time and trading state: once per window, then occasionally."""
         assert self.client is not None
-        if window.multi_outcome or time.monotonic() - window.details_at < DETAILS_REFRESH_SECONDS:
+        wait = UNOPENED_RETRY_SECONDS if window.unopened_since is not None else DETAILS_REFRESH_SECONDS
+        if window.multi_outcome or time.monotonic() - window.details_at < wait:
             return
-        details = await self.client.get_event_details(window.event_symbol)
+        try:
+            details = await self.client.get_event_details(window.event_symbol)
+        except APIError as exc:
+            if not _not_opened_yet(exc):
+                raise
+            self._window_not_opened(window)
+            return
         window.details_at = time.monotonic()
+        if window.unopened_since is not None:
+            if window.unopened_warned:
+                self._log("info", self._series_of(window), "Public opened this window; trading it as normal")
+            window.unopened_since, window.unopened_warned = None, False
+            window.note = None
         outcome = details.outcome
         if outcome is None:
             window.multi_outcome = True
@@ -372,6 +391,24 @@ class Engine:
         if outcome.close_time is not None:
             window.close_time = as_utc(outcome.close_time)
         window.tradable = outcome.is_tradable and not details.halted
+
+    def _window_not_opened(self, window: Window) -> None:
+        """Public doesn't have this window's details yet: normal for a window that just opened."""
+        now = time.monotonic()
+        window.details_at = now
+        window.note = UNOPENED_NOTE
+        if window.unopened_since is None:
+            window.unopened_since = now
+        elif not window.unopened_warned and now - window.unopened_since >= UNOPENED_WARN_SECONDS:
+            window.unopened_warned = True
+            self._log(
+                "warn", self._series_of(window),
+                f"Public still hasn't opened this window after {UNOPENED_WARN_SECONDS:.0f}s; "
+                "it can't be traded until Public does",
+            )
+
+    def _series_of(self, window: Window) -> Optional[str]:
+        return next((series for series, w in self.windows.items() if w is window), None)
 
     async def _refresh_quotes(self, live: list[tuple[dict[str, Any], Window]]) -> None:
         """Prices for every market's YES and NO contracts in one request (per 50 contracts)."""
@@ -421,7 +458,7 @@ class Engine:
         if not in_entry_window(strategy, seconds_left):
             return
         if not window.tradable or window.yes_symbol is None or window.no_symbol is None:
-            window.note = "Window is not tradable right now"
+            window.note = UNOPENED_NOTE if window.unopened_since is not None else "Window is not tradable right now"
             return
         if time.monotonic() - window.priced_at > MAX_QUOTE_AGE_SECONDS:
             window.note = "Waiting for fresh prices"
@@ -820,6 +857,11 @@ def _trade_summary(trade: dict[str, Any]) -> dict[str, Any]:
         "result": trade["result"],
         "note": trade["note"],
     }
+
+
+def _not_opened_yet(exc: APIError) -> bool:
+    """Public's answer for a window it lists but can't return details for yet."""
+    return exc.status_code == 400 and "no event found" in exc.message.lower()
 
 
 async def _nothing() -> None:
