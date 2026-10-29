@@ -628,7 +628,7 @@ class Engine:
             return
         quantity = Decimal(trade["quantity"])
         buy_fees = Decimal(trade["est_fees"]) * filled / quantity
-        cost = Decimal(trade["avg_price"] or trade["limit_price"]) + buy_fees / filled
+        cost = _price(trade) + buy_fees / filled
         # Selling costs about what buying did; Public quotes no fee for a sell before it's placed.
         sell_fee = Decimal(trade["est_fees"]) / quantity
         reason = exit_reason(strategy, cost, price, sell_fee)
@@ -689,7 +689,7 @@ class Engine:
             filled = Decimal(e["filled_quantity"])
             if filled > 0:
                 sold += filled
-                value += filled * Decimal(e["avg_price"] or e["limit_price"])
+                value += filled * _price(e)
                 fees += Decimal(e["est_fees"]) * filled / Decimal(e["quantity"])
         self.store.update_trade(trade_id, sold_quantity=sold, sold_value=value, sell_fees=fees)
 
@@ -742,7 +742,7 @@ class Engine:
             status = order.status.value
             filled = order.filled_quantity or Decimal(0)
             fields: dict[str, Any] = {"order_status": status, "filled_quantity": filled}
-            if order.average_price is not None:
+            if order.average_price and filled > 0:  # Public reports 0 until something fills
                 fields["avg_price"] = order.average_price
             if status in TERMINAL_ORDER_STATUSES:
                 if filled == 0:
@@ -768,7 +768,7 @@ class Engine:
         status = order.status.value
         filled = order.filled_quantity or Decimal(0)
         fields: dict[str, Any] = {"order_status": status, "filled_quantity": filled}
-        if order.average_price is not None:
+        if order.average_price and filled > 0:  # Public reports 0 until something fills
             fields["avg_price"] = order.average_price
         if order.reject_reason:
             fields["note"] = order.reject_reason
@@ -889,6 +889,13 @@ class Engine:
         self.log.append({"time": now_iso(), "level": level, "series": series, "message": message})
 
 
+def _price(order: dict[str, Any]) -> Decimal:
+    """Price per contract of a trade's or a sell's order: the average it filled at, or its limit
+    price until it fills. Rows saved by earlier versions can hold Public's 0 for an unfilled order."""
+    avg = Decimal(order["avg_price"] or 0)
+    return avg if avg > 0 else Decimal(order["limit_price"])
+
+
 def _position(trade: dict[str, Any], window: Optional[Window], selling: bool = False) -> dict[str, Any]:
     """A market's unsettled trade, valued at the current bid while its window is still trading.
 
@@ -902,7 +909,7 @@ def _position(trade: dict[str, Any], window: Optional[Window], selling: bool = F
     sold = Decimal(trade.get("sold_quantity") or 0)
     held = filled - sold
     proceeds = Decimal(trade.get("sold_value") or 0) - Decimal(trade.get("sell_fees") or 0)
-    avg_price = Decimal(trade["avg_price"] or trade["limit_price"])
+    avg_price = _price(trade)
     fees = Decimal(trade["est_fees"]) * filled / quantity
     cost = filled * avg_price + fees
     trading = window is not None and window.event_symbol == trade["event_symbol"]
@@ -947,7 +954,7 @@ def _trade_summary(trade: dict[str, Any]) -> dict[str, Any]:
         "side": trade["side"],
         "quantity": Decimal(trade["quantity"]),
         "filled": Decimal(trade["filled_quantity"]),
-        "price": Decimal(trade["avg_price"] or trade["limit_price"]),
+        "price": _price(trade),
         "sold": Decimal(trade["sold_quantity"]),
         "exit_reason": trade["exit_reason"],
         "result": trade["result"],
