@@ -770,6 +770,13 @@ class Engine:
         self.log.append({"time": now_iso(), "level": level, "series": series, "message": message})
 
 
+def _price(order: dict[str, Any]) -> Decimal:
+    """Price per contract of a trade's or a sell's order: the average it filled at, or its limit
+    price until it fills. Rows saved by earlier versions can hold Public's 0 for an unfilled order."""
+    avg = Decimal(order["avg_price"] or 0)
+    return avg if avg > 0 else Decimal(order["limit_price"])
+
+
 def _position(trade: dict[str, Any], window: Optional[Window], selling: bool = False) -> dict[str, Any]:
     """A market's unsettled trade, valued at the current bid while its window is still trading.
 
@@ -806,13 +813,6 @@ def _position(trade: dict[str, Any], window: Optional[Window], selling: bool = F
         "if_win": held + proceeds - cost,
         "if_lose": proceeds - cost,
     }
-
-
-def _price(order: dict[str, Any]) -> Decimal:
-    """Price per contract of a trade's or a sell's order: the average it filled at, or its limit
-    price until it fills. Rows saved by earlier versions can hold Public's 0 for an unfilled order."""
-    avg = Decimal(order["avg_price"] or 0)
-    return avg if avg > 0 else Decimal(order["limit_price"])
 
 
 def _trade_summary(trade: dict[str, Any]) -> dict[str, Any]:
