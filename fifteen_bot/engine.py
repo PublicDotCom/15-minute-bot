@@ -71,6 +71,9 @@ SETTLE_GRACE_SECONDS = 30  # windows settle a few minutes after they close
 SETTLE_POLL_SECONDS = 20.0
 ORDER_LOOKUP_GRACE_SECONDS = 30
 EXIT_RETRY_SECONDS = 5.0  # a sell not filled by then is cancelled and re-priced at the new bid
+# Public is sometimes slow or unreachable for a minute or two; the bot retries every tick, and
+# says so in the activity log at most this often.
+CONNECTION_LOG_SECONDS = 60.0
 
 TERMINAL_ORDER_STATUSES = {
     OrderStatus.FILLED.value,
@@ -159,6 +162,7 @@ class Engine:
         self._settle_checked: dict[int, float] = {}
         self._cancel_sent: set[int] = set()  # trade ids whose buy order was cancelled
         self._exit_cancel_sent: set[int] = set()  # exit ids whose sell order was cancelled
+        self._trouble_logged_at = float("-inf")  # last time the activity log said Public was slow or unreachable
         # Awaited after recording an order and before sending it; with a database, this saves
         # the record first, so a crash can never leave an order at Public that we don't know about.
         self.checkpoint: Callable[[], Awaitable[None]] = _nothing
@@ -257,7 +261,7 @@ class Engine:
                 await self._tick()
             except Exception as exc:  # keep the loop alive whatever happens
                 logger.exception("%stick failed", self._prefix)
-                self._log("error", None, f"Engine error: {exc}")
+                self._log("error", None, f"Engine error: {_describe(exc)}")
             await asyncio.sleep(max(0.5, TICK_SECONDS - (time.monotonic() - started)))
 
     async def _tick(self) -> None:
@@ -283,8 +287,18 @@ class Engine:
         try:
             await step
         except Exception as exc:
+            if (problem := _connection_problem(exc)) is not None:
+                self._connection_trouble(series, problem)
+                return
             logger.exception("%sstep failed for %s", self._prefix, series)
             self._log("error", series, str(exc))
+
+    def _connection_trouble(self, series: Optional[str], problem: str) -> None:
+        """Public slow or unreachable: it passes, and the next tick retries, so keep it short and rare."""
+        logger.warning("%s%s%s; retrying", self._prefix, f"[{series}] " if series else "", problem)
+        if time.monotonic() - self._trouble_logged_at >= CONNECTION_LOG_SECONDS:
+            self._trouble_logged_at = time.monotonic()
+            self.log.append({"time": now_iso(), "level": "warn", "series": None, "message": f"{problem}; retrying"})
 
     # --- discovery --------------------------------------------------------
 
@@ -459,6 +473,11 @@ class Engine:
             if preflight.estimated_cost is not None:
                 trade["est_fees"] = max(Decimal(0), preflight.estimated_cost - preflight.order_value)
         except APIError as exc:
+            if (problem := _connection_problem(exc)) is not None:
+                # Nothing was placed, so try again next tick rather than giving up on the window.
+                window.note = f"{problem}; trying again"
+                self._connection_trouble(series, problem)
+                return
             self.store.insert_trade(**trade, order_status="PREFLIGHT_FAILED", result="REJECTED", note=str(exc))
             self._log("error", series, f"Preflight rejected {summary}: {exc}")
             return
@@ -478,8 +497,8 @@ class Engine:
             )
         except APIError as exc:
             # The request may still have reached Public; order tracking looks it up and settles the row.
-            self.store.update_trade(trade_id, order_status="SUBMIT_ERROR", note=str(exc))
-            self._log("error", series, f"Order failed {summary}: {exc}")
+            self.store.update_trade(trade_id, order_status="SUBMIT_ERROR", note=_describe(exc))
+            self._log("error", series, f"Order failed {summary}: {_describe(exc)}")
             return
         self.store.update_trade(trade_id, order_status=OrderStatus.NEW.value)
         window.note = f"Ordered {summary}"
@@ -558,8 +577,8 @@ class Engine:
             await self.client.place_order(_sell_order(trade["contract_symbol"], quantity, price, order_id), self.account_id)
         except APIError as exc:
             # The request may still have reached Public; order tracking looks it up either way.
-            self.store.update_exit(exit_id, order_status="SUBMIT_ERROR", note=str(exc))
-            self._log("error", series, f"Sell failed {summary}: {exc}")
+            self.store.update_exit(exit_id, order_status="SUBMIT_ERROR", note=_describe(exc))
+            self._log("error", series, f"Sell failed {summary}: {_describe(exc)}")
             return
         self.store.update_exit(exit_id, order_status=OrderStatus.NEW.value)
         self._log("trade", series, f"Selling {summary}")
@@ -820,6 +839,23 @@ def _trade_summary(trade: dict[str, Any]) -> dict[str, Any]:
         "result": trade["result"],
         "note": trade["note"],
     }
+
+
+def _connection_problem(exc: BaseException) -> Optional[str]:
+    """What went wrong, in plain words, if `exc` is Public being slow or unreachable; else None.
+
+    The SDK wraps these as an APIError with no message, so the cause is what tells them apart.
+    """
+    cause = exc if isinstance(exc, httpx.TransportError) else exc.__cause__
+    if isinstance(cause, httpx.TimeoutException):
+        return "Public took too long to answer"
+    if isinstance(cause, httpx.TransportError):
+        return "Couldn't reach Public"
+    return None
+
+
+def _describe(exc: BaseException) -> str:
+    return _connection_problem(exc) or str(exc)
 
 
 async def _nothing() -> None:
