@@ -71,9 +71,11 @@ caffeinate -i uv run python -m fifteen_bot
 2. **Account**: pick the brokerage account the bot should trade in.
 3. **Markets**: choose which 15-minute markets to trade. Start with one or two.
 4. **Your rule**: set when and what to buy, and optionally when to sell early (take-profit and
-   stop-loss). A live example shows what a trade would cost and pay.
-5. **Review**: check what each trade can cost, then **Start trading**, or **Finish without
-   starting** and press Start on the dashboard later.
+   stop-loss) and a daily loss limit for each market. A live example shows what a trade would
+   cost and pay.
+5. **Review**: check what each trade can cost, optionally set a daily loss limit for the whole
+   account, then **Start trading**, or **Finish without starting** and press Start on the
+   dashboard later.
 
 ### 6. Day to day
 
@@ -85,6 +87,8 @@ caffeinate -i uv run python -m fifteen_bot
   your key again to rejoin the same bot.
 - **Change a market's rule:** **Edit** on its card, or **Edit all strategies** for every market.
 - **Turn a market on/off:** the switch on its card.
+- **Daily loss limits (optional):** one for the whole account (**Edit** on the "Today" tile) and
+  one per market (in its rule). See "Daily loss limits" below for how they work.
 - **See results:** the dashboard shows total P&L, win rate, a per-market table, every trade and an
   activity log. A trade shows as won/lost a few minutes after its window closes, once Public
   settles it.
@@ -214,6 +218,26 @@ headers are trusted). Each person connects with their own key and gets their own
 - With saving turned on, **every order is saved before it's sent**, so even after a crash the app
   knows about every order that could exist at Public and never places one twice. If the database
   can't be written, the bot doesn't send the order.
+
+### Daily loss limits
+
+Both are optional: one for the whole account, and one per market (part of the market's rule).
+
+- **A limit is never passed.** Before each buy the bot works out the worst case for the day:
+  today's settled P&L (gains give room), plus everything its open trades could still lose (as if
+  every one lost; an order still filling counts in full), plus this buy and its fees. If that
+  could pass the market's limit, or the account's limit across every market, the buy isn't
+  placed. Buys that happen at the same moment in several markets can't pass a limit together.
+- **Once a buy is skipped, buying stays stopped:** for that market, until you press **Resume** on
+  its card (or switch it off and on); for the account limit, on every market, until you press
+  **Resume** in the top bar (or Stop and Start). It doesn't restart by itself, even on a new day.
+  Resuming with the same limit on the same day usually stops again at the next buy, so raise the
+  limit first to trade more that day.
+- **Selling carries on while buying is stopped:** take-profit and stop-loss sells, and settlement,
+  continue as normal.
+- **A day starts at midnight US Eastern**, so only trades that settled since then count as today's.
+- Only the bot's own trades count, from this session: not other trades in your Public account,
+  and not trades from before a Disconnect.
 
 ### Staying under Public's rate limit
 

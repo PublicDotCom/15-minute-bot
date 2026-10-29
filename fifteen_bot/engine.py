@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import public_api_sdk
@@ -54,6 +55,7 @@ from .strategy import (
     pick_contract,
     sell_price,
     settle_pnl,
+    would_pass_limit,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +86,7 @@ TERMINAL_ORDER_STATUSES = {
 # NOT_SENT: it couldn't be saved first, so it was never sent; a later tick can try again.
 EXIT_DONE_STATUSES = TERMINAL_ORDER_STATUSES | {"NOT_FOUND", "NOT_SENT"}
 EXIT_LABELS = {"TAKE_PROFIT": "take-profit", "STOP_LOSS": "stop-loss"}
+TRADING_DAY_ZONE = ZoneInfo("America/New_York")  # daily loss limits count from midnight here
 
 
 def utcnow() -> datetime:
@@ -92,6 +95,13 @@ def utcnow() -> datetime:
 
 def as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def trading_day_start(now: Optional[datetime] = None) -> datetime:
+    """The start of today's trading day (midnight US Eastern), in UTC."""
+    local = (now or utcnow()).astimezone(TRADING_DAY_ZONE)
+    midnight = datetime(local.year, local.month, local.day, tzinfo=TRADING_DAY_ZONE)
+    return midnight.astimezone(timezone.utc)
 
 
 def market_name(title: Optional[str], series: str) -> str:
@@ -246,7 +256,19 @@ class Engine:
         if running != self.running:
             self.running = running
             self._log("info", None, f"Engine {'started' if running else 'stopped'}")
+        if running and self.store.get_setting("halted_at") is not None:
+            self.store.set_setting("halted_at", None)
+            self._log("info", None, "Buying resumed after the daily loss limit")
         self.store.set_setting("running", "1" if running else "0")
+
+    def loss_limit(self) -> Optional[Decimal]:
+        """The account-wide daily loss limit, or None."""
+        value = self.store.get_setting("daily_loss_limit")
+        return Decimal(value) if value is not None else None
+
+    def set_loss_limit(self, limit: Optional[Decimal]) -> None:
+        self.store.set_setting("daily_loss_limit", str(limit) if limit is not None else None)
+        self._log("info", None, f"Daily loss limit {f'set to ${limit:.2f}' if limit is not None else 'turned off'}")
 
     # --- loop -------------------------------------------------------------
 
@@ -415,6 +437,8 @@ class Engine:
         strategy: Strategy = market["strategy"]
         if not (self.running and market["enabled"]) or window.multi_outcome:
             return
+        if market["halted_at"] or self.store.get_setting("halted_at"):
+            return  # a daily loss limit stopped buying; take-profit and stop-loss sells carry on
         if self.store.has_trade(series, window.event_symbol):
             return
         seconds_left = window.seconds_left()
@@ -450,6 +474,9 @@ class Engine:
             "close_time": window.closes_at.isoformat(),
         }
         summary = f"{pick.side} x{quantity} @ {_cents(pick.price)} with {int(seconds_left)}s left"
+        order_cost = quantity * pick.price
+        if self._loss_limit_reached(series, strategy, order_cost):
+            return
 
         # Preflight checks the order with Public without placing it, and gives the fee estimate.
         try:
@@ -461,6 +488,12 @@ class Engine:
         except APIError as exc:
             self.store.insert_trade(**trade, order_status="PREFLIGHT_FAILED", result="REJECTED", note=str(exc))
             self._log("error", series, f"Preflight rejected {summary}: {exc}")
+            return
+        # Again with the fees. Nothing awaits between this check and recording the trade below, so
+        # markets buying at the same moment each see the others' trades and can't pass a limit together.
+        if self.store.get_setting("halted_at") is not None:
+            return  # another market's buy stopped every market meanwhile
+        if self._loss_limit_reached(series, strategy, order_cost + trade.get("est_fees", Decimal(0))):
             return
 
         # Record the order before sending it, so a crash or timeout can never lead to a second order.
@@ -484,6 +517,44 @@ class Engine:
         self.store.update_trade(trade_id, order_status=OrderStatus.NEW.value)
         window.note = f"Ordered {summary}"
         self._log("trade", series, f"Ordered {summary}")
+
+    # --- daily loss limits ------------------------------------------------
+
+    def _today(self) -> tuple[dict[str, Decimal], dict[str, Decimal]]:
+        """Per market: today's settled net P&L, and the most its open trades could still lose."""
+        pnl = self.store.pnl_since(trading_day_start().isoformat(timespec="seconds"))
+        at_risk: dict[str, Decimal] = {}
+        for trade in self.store.pending_trades():
+            at_risk[trade["series"]] = at_risk.get(trade["series"], Decimal(0)) + _at_risk(trade)
+        return pnl, at_risk
+
+    def _loss_limit_reached(self, series: str, strategy: Strategy, order_cost: Decimal) -> bool:
+        """Whether this buy could take the day's loss past a limit; if so, stop buying until resumed."""
+        pnl, at_risk = self._today()
+        limit = self.loss_limit()
+        total_pnl, total_risk = sum(pnl.values(), Decimal(0)), sum(at_risk.values(), Decimal(0))
+        if would_pass_limit(limit, total_pnl, total_risk, order_cost):
+            assert limit is not None
+            self.store.set_setting("halted_at", now_iso())
+            worst = total_risk + order_cost - total_pnl
+            self._log(
+                "warn", series,
+                f"Daily loss limit: stopped buying on every market. This buy could have taken today's loss to "
+                f"${worst:.2f}, past the ${limit:.2f} limit. Press Resume to buy again.",
+            )
+            return True
+        market_pnl, market_risk = pnl.get(series, Decimal(0)), at_risk.get(series, Decimal(0))
+        if would_pass_limit(strategy.daily_loss_limit, market_pnl, market_risk, order_cost):
+            assert strategy.daily_loss_limit is not None
+            self.store.halt_market(series)
+            worst = market_risk + order_cost - market_pnl
+            self._log(
+                "warn", series,
+                f"Daily loss limit: stopped buying this market. This buy could have taken today's loss to "
+                f"${worst:.2f}, past its ${strategy.daily_loss_limit:.2f} limit. Press Resume on its card to buy again.",
+            )
+            return True
+        return False
 
     # --- early exits ------------------------------------------------------
 
@@ -720,6 +791,7 @@ class Engine:
 
     def snapshot(self) -> dict[str, Any]:
         stats = self.store.stats()
+        today_pnl, at_risk = self._today()
         empty = {"trades": 0, "wins": 0, "losses": 0, "pending": 0, "pnl": Decimal(0), "cost": Decimal(0)}
         markets = []
         open_pnl: Optional[Decimal] = None
@@ -742,6 +814,10 @@ class Engine:
                     "window_trade": _trade_summary(this_window) if this_window else None,
                     "position": position,
                     "stats": stats.get(market["series"], empty),
+                    "today": {
+                        "pnl": today_pnl.get(market["series"], Decimal(0)),
+                        "at_risk": at_risk.get(market["series"], Decimal(0)),
+                    },
                 }
             )
         totals: dict[str, Any] = dict(empty)
@@ -756,6 +832,12 @@ class Engine:
             "running": self.running,
             "markets": markets,
             "totals": totals,
+            "loss_limit": {
+                "limit": self.loss_limit(),
+                "halted_at": self.store.get_setting("halted_at"),
+                "today_pnl": sum(today_pnl.values(), Decimal(0)),
+                "at_risk": sum(at_risk.values(), Decimal(0)),
+            },
             "log": list(self.log)[::-1][:100],
             "server_time": utcnow().isoformat(),
         }
@@ -806,6 +888,20 @@ def _position(trade: dict[str, Any], window: Optional[Window], selling: bool = F
         "if_win": held + proceeds - cost,
         "if_lose": proceeds - cost,
     }
+
+
+def _at_risk(trade: dict[str, Any]) -> Decimal:
+    """The most an unsettled trade could still lose: everything paid (or still to pay, while
+    its order is open) for contracts that might expire worthless, less what sold early."""
+    quantity = Decimal(trade["quantity"])
+    fees = Decimal(trade["est_fees"])
+    if trade["order_status"] in TERMINAL_ORDER_STATUSES:
+        filled = Decimal(trade["filled_quantity"])
+        cost = filled * Decimal(trade["avg_price"] or trade["limit_price"]) + fees * filled / quantity
+    else:
+        cost = quantity * Decimal(trade["limit_price"]) + fees  # the rest could still fill at the limit
+    proceeds = Decimal(trade["sold_value"]) - Decimal(trade["sell_fees"])
+    return max(Decimal(0), cost - proceeds)
 
 
 def _trade_summary(trade: dict[str, Any]) -> dict[str, Any]:

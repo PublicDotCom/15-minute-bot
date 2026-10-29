@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "psycopg[binary,pool]>=3.3.6",
     "publicdotcom-py>=0.1.27",
+    "tzdata>=2026.6",
     "uvicorn[standard]>=0.54.0",
 ]
 
