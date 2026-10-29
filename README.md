@@ -31,8 +31,8 @@ dashboard in your browser.
 ### 2. Get the code and install
 
 ```sh
-git clone https://github.com/PublicDotCom/15-minute-bot.git
-cd 15-minute-bot
+git clone https://github.com/PublicDotCom/15-minute-prediction-market-bot.git
+cd 15-minute-prediction-market-bot
 uv sync
 ```
 
