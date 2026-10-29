@@ -36,7 +36,7 @@ trading activity.
 > execution risk.
 
 Explore [15-minute prediction markets on Public](https://public.com/prediction-markets/15-min) or
-read the [15-minute prediction market API and Python SDK guide](https://github.com/PublicDotCom/publicdotcom-py).
+read the [15-minute prediction market API and Python SDK guide](https://public.com/api/docs/templates/trade-15-minute-prediction-markets).
 
 ## Getting started
 
@@ -312,7 +312,7 @@ on the contracts supported through Public’s API.
 Yes. The bot uses the official [Public Python SDK](https://github.com/PublicDotCom/publicdotcom-py)
 to communicate with Public’s API, retrieve supported market information, and submit orders.
 Developers can also follow the
-[15-minute prediction market API guide](https://github.com/PublicDotCom/publicdotcom-py) to build
+[15-minute prediction market API guide](https://public.com/api/docs/templates/trade-15-minute-prediction-markets) to build
 their own programmatic workflows.
 
 ### Can I configure take-profit and stop-loss rules?
